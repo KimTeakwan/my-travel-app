@@ -37,3 +37,9 @@ __screenshots__/
 
 # Vite
 *.timestamp-*-*.mjs
+
+# 🚨 인증키 유출 방지 (보안 필수!)
+.env
+.env.local
+node_modules/
+dist/
