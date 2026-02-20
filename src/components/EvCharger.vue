@@ -1,13 +1,13 @@
 <script setup>
 import { ref, onMounted } from 'vue';
 import axios from 'axios';
-import { EV_KEY } from '../ApiConfig'; 
+import { EV_KEY } from '../ApiConfig';
 
 const chargers = ref([]);
 const loading = ref(false);
-const region = ref('11'); // 기본 서울
+const region = ref('11');
 
-// 🗺️ 가이드 문서 zcode 기준 완벽 매핑! (강원 51, 전북 52 수정 완료) 
+// 🗺️ 전국 17개 지역 고정 좌표 (환경부 zcode 기준 찰떡 호환!)
 const regions = [
   { code: '11', name: '서울', lat: 37.5665, lng: 126.9780 },
   { code: '26', name: '부산', lat: 35.1795, lng: 129.0756 },
@@ -24,13 +24,14 @@ const regions = [
   { code: '47', name: '경북', lat: 36.5759, lng: 128.5056 },
   { code: '48', name: '경남', lat: 35.2382, lng: 128.6924 },
   { code: '50', name: '제주', lat: 33.4890, lng: 126.4983 },
-  { code: '51', name: '강원', lat: 37.8228, lng: 128.1555 }, // 🚨 51로 수정 
-  { code: '52', name: '전북', lat: 35.8242, lng: 127.1479 }  // 🚨 52로 수정 
+  { code: '51', name: '강원', lat: 37.8228, lng: 128.1555 }, 
+  { code: '52', name: '전북', lat: 35.8242, lng: 127.1479 }  
 ];
 
 let map = null;
 let markers = [];
 let infoWindows = [];
+let myLocationMarker = null; // 🚨 내 위치 빨간 마커 저장할 변수 하나 추가했음!
 
 const initMap = () => {
   if (!window.naver || !window.naver.maps) return;
@@ -43,22 +44,17 @@ const initMap = () => {
 const fetchChargers = async () => {
   loading.value = true;
   try {
-    // 🚨 403 에러 완전 차단: Axios 파라미터 대신 URL에 직접 연결해서 인코딩 충돌 방지!
-    // numOfRows 최대치인 9999로 설정 
     const url = `/api/B552584/EvCharger/getChargerInfo?serviceKey=${EV_KEY}&pageNo=1&numOfRows=9999&zcode=${region.value}&dataType=JSON`; 
     
     const response = await axios.get(url);
     
-    // 환경부 JSON 구조 파싱 [cite: 39]
     let rawData = response.data?.items?.item || [];
-    // 데이터가 1개일 경우 객체로 반환되는 것 방지
     if (rawData && !Array.isArray(rawData)) rawData = [rawData]; 
     
     if (rawData.length === 0) {
       alert("형! 이 지역은 데이터가 없거나, 공공데이터 포털 승인 대기 중이야! ⏳");
       chargers.value = [];
     } else {
-      // 🎯 충전소 ID(statId) 기준으로 묶기 
       const grouped = {};
       rawData.forEach(charger => {
         const key = charger.statId; 
@@ -66,27 +62,25 @@ const fetchChargers = async () => {
           grouped[key] = {
             stnPlace: charger.statNm,
             stnAddr: charger.addr,
-            lat: parseFloat(charger.lat), // 
-            lng: parseFloat(charger.lng), // 
+            lat: parseFloat(charger.lat),
+            lng: parseFloat(charger.lng),
             rapidCnt: 0,
             slowCnt: 0
           };
         }
-        // 02(AC완속), 07(AC3상) 등은 완속으로, 나머지는 급속으로 분류 
         if (charger.chgerType === '02' || charger.chgerType === '07' || charger.chgerType === '08') {
           grouped[key].slowCnt++;
         } else {
           grouped[key].rapidCnt++;
         }
       });
-      
       chargers.value = Object.values(grouped);
     }
 
     const selectedRegion = regions.find(r => r.code === region.value);
     if (map && selectedRegion) {
       map.setCenter(new window.naver.maps.LatLng(selectedRegion.lat, selectedRegion.lng));
-      map.setZoom(11);
+      map.setZoom(11); // 전체 조회할 땐 넓게 보기!
     }
 
     drawMarkers();
@@ -107,10 +101,8 @@ const drawMarkers = () => {
   infoWindows = [];
 
   chargers.value.forEach((item) => {
-    // 위경도 없으면 스킵
     if (!item.lat || !item.lng) return; 
 
-    // 📍 네이버 Geocode 없이 바로 마커 꽂아버리기! 속도 미침!
     const coords = new window.naver.maps.LatLng(item.lat, item.lng);
 
     const marker = new window.naver.maps.Marker({
@@ -158,22 +150,70 @@ const drawMarkers = () => {
   });
 };
 
+// 🚀 GPS 연동: 내 위치로 슝 날아가는 마법의 함수!
+const moveToMyLocation = () => {
+  if (!navigator.geolocation) {
+    alert("형 브라우저가 GPS를 지원 안 한대! ㅠㅠ");
+    return;
+  }
+
+  loading.value = true;
+  
+  // 맥북 GPS한테 "내 위치 좀 알려줘!" 하고 요청함
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      const lat = position.coords.latitude;
+      const lng = position.coords.longitude;
+      const myCoords = new window.naver.maps.LatLng(lat, lng);
+
+      // 1. 지도를 내 위치로 확 땡겨옴! (줌 14로 가까이서 보게 세팅)
+      if (map) {
+        map.setCenter(myCoords);
+        map.setZoom(14);
+      }
+
+      // 2. 기존 내 위치 마커가 있으면 깔끔하게 지워줌
+      if (myLocationMarker) {
+        myLocationMarker.setMap(null);
+      }
+
+      // 3. 내 위치에 눈에 확 띄는 빨간색 자동차 마커 뽝! 🚗
+      myLocationMarker = new window.naver.maps.Marker({
+        position: myCoords,
+        map: map,
+        icon: {
+          content: `<div style="background:#ff3b30; color:white; padding:6px 12px; border-radius:20px; font-weight:bold; font-size:13px; box-shadow:0 3px 6px rgba(0,0,0,0.3); border: 2px solid white;">🚗 내 위치</div>`,
+          anchor: new window.naver.maps.Point(40, 15)
+        }
+      });
+
+      loading.value = false;
+    },
+    (error) => {
+      console.error("GPS 에러:", error);
+      alert("형! 맥북에서 위치 권한 허용해 줘야 쓸 수 있음~ 브라우저 팝업 뜨면 '허용' 뽝 눌러줘! 🥺");
+      loading.value = false;
+    }
+  );
+};
+
 onMounted(() => { initMap(); fetchChargers(); });
 </script>
 
 <template>
   <div class="container">
     <div class="header">
-      <h2>⚡ 전국 전기차 충전소 (가이드 완벽 반영!)</h2>
+      <h2>⚡ 전국 전기차 충전소 (GPS 연동 완료!)</h2>
       <div class="controls">
         <select v-model="region" class="select-box">
           <option v-for="r in regions" :key="r.code" :value="r.code">{{ r.name }}</option>
         </select>
         <button @click="fetchChargers" :disabled="loading" class="btn">조회 🔍</button>
+        <button @click="moveToMyLocation" class="btn gps-btn">📍 내 위치</button>
       </div>
     </div>
     <div id="naver-map"></div>
-    <div v-if="loading" class="status-bar">🚀 환경부 데이터 광속으로 불러오는 중...</div>
+    <div v-if="loading" class="status-bar">🚀 데이터랑 위성 통신 중...</div>
     
     <div class="card-grid">
       <div v-for="(item, index) in chargers" :key="index" class="charger-card">
@@ -189,7 +229,6 @@ onMounted(() => { initMap(); fetchChargers(); });
 </template>
 
 <style scoped>
-/* 디자인은 그대로 유지! */
 .container { padding: 20px; max-width: 1200px; margin: 0 auto; font-family: 'Pretendard', sans-serif; }
 .header { display: flex; justify-content: space-between; margin-bottom: 20px; }
 #naver-map { width: 100%; height: 500px; border-radius: 20px; border: 1px solid #ddd; margin-bottom: 30px; }
@@ -204,4 +243,13 @@ onMounted(() => { initMap(); fetchChargers(); });
 .btn { padding: 10px 20px; background: #42b883; color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: bold; }
 .select-box { padding: 10px; border-radius: 10px; border: 1px solid #ddd; margin-right: 10px; }
 .status-bar { margin-top: 10px; color: #42b883; font-weight: bold; }
+
+/* 🚨 내 위치 버튼 전용 스타일! 눈에 띄게 파란색 줬음! */
+.gps-btn {
+  background: #007aff;
+  margin-left: 10px;
+}
+.gps-btn:hover {
+  background: #0056b3;
+}
 </style>
